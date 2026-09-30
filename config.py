@@ -75,12 +75,30 @@ DELAYED = dict(
 # ── Seguimiento de EPs recientes ────────────────────────────────────────────
 FOLLOWUP = dict(days=20)
 
+# ── Plan de trade y gestión (reglas de Qullamaggie) ─────────────────────────
+# Entrada: ruptura del opening range high (1, 5 o 60 min). El scanner corre al cierre,
+#   así que el plan es para la rueda siguiente y la simulación entra en su apertura.
+# Stop: mínimo del día (LOD) o de la consolidación, pero nunca más ancho que
+#   `max_stop_adr` × ADR ("no wider than the ATR/ADR"; como máximo 1,5 ADR).
+# Parcial: vender `partial_fraction` entre los días 3 y 5 si está en ganancia, y subir
+#   el stop a breakeven.
+# Resto: se sale en el primer CIERRE debajo de la media de `trail_ma` ruedas, una vez
+#   que esa media superó el stop inicial.
+TRADE = dict(
+    adr_window=20,                 # ADR% = promedio de (máximo/mínimo − 1) de las 20 ruedas previas
+    max_stop_adr=1.0,
+    partial_days=(3, 5),
+    partial_fraction=1 / 3,
+    trail_ma=10,                   # 10 para acciones rápidas, 20 para las más lentas
+    max_bars=120,                  # tope de seguridad de la simulación
+    # Valores iniciales de la calculadora de tamaño del reporte (se editan en la página
+    # y quedan guardados sólo en tu navegador; el capital nunca se sube al repo)
+    default_risk_pct=0.5,
+    default_max_position_pct=20,
+)
+
 # ── Registro de señales y estadísticas ──────────────────────────────────────
-# Entrada simulada: apertura de la rueda siguiente a la señal (el scanner corre al cierre).
-# Stop: mínimo del día de la señal (EP / 9M) o mínimo de la consolidación (delayed EP).
-# Salida: stop tocado, o cierre de la rueda N° `horizon` contando la de entrada.
 TRACKING = dict(
-    horizon=20,
     report_horizons=[5, 10, 20],
     min_sample_warning=30,
 )

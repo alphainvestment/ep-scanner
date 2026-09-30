@@ -93,6 +93,33 @@ def status_cell(v):
 
 # ── tablas ──────────────────────────────────────────────────────────────────
 
+def stop_adr_cell(v):
+    x = _n(v)
+    if x is None:
+        return "—"
+    cls = "ok" if x <= 1.0 else "warn-t" if x <= 1.5 else "bad-t"
+    return f'<span class="{cls}">{x:.1f}</span>'
+
+
+def calc_cell(r):
+    e, st = _n(r.get("plan_entry")), _n(r.get("plan_stop"))
+    if e is None or st is None or e <= st:
+        return "—"
+    return f'<span class="calc" data-e="{e:.4f}" data-s="{st:.4f}">—</span>'
+
+
+PLAN_COLS = [
+    ("adr", "ADR", lambda v: pct(v, 1, False), "Rango diario promedio de las 20 ruedas previas"),
+    ("plan_entry", "Entrada ref.", price,
+     "EP y breakout: cierre de hoy; la entrada real es el ORH de mañana. Setup: máximo de la consolidación (orden stop)"),
+    ("plan_natural_stop", "Stop natural", price, "LOD del día (EP) o mínimo de la consolidación (delayed)"),
+    ("stop_adr", "Stop/ADR", stop_adr_cell, "Ancho del stop natural medido en ADRs. Qullamaggie: ≤ 1, como máximo 1,5"),
+    ("plan_stop", "Stop plan", price, "Stop natural o, si es más ancho que 1 ADR, entrada − 1 ADR"),
+    ("plan_stop_pct", "Riesgo", lambda v: pct(v, 1, False), "Distancia entre la entrada de referencia y el stop del plan"),
+    ("*", "Tamaño", calc_cell, "Acciones y monto según la calculadora de arriba"),
+]
+
+
 def h_is_score(header: str) -> bool:
     return header.startswith("Score")
 
@@ -140,9 +167,7 @@ EP_COLS = [
     ("rev_yoy_q1", "YoY trim. ant.", pct, "Mismo dato del trimestre anterior: si el último es mayor, hay aceleración"),
     ("mkt_cap", "Mkt cap", money, ""),
     ("sector", "Sector", plain, ""),
-    ("stop_ref", "Stop (LOD)", price, "Mínimo del día del gap"),
-    ("risk_pct", "Riesgo", lambda v: pct(v, 1, False), "Distancia del cierre al LOD"),
-]
+] + PLAN_COLS
 
 DELAYED_COLS = [
     ("*", "Ticker", ticker_cell, ""),
@@ -160,9 +185,7 @@ DELAYED_COLS = [
     ("rvol", "RVol hoy", mult, ""),
     ("earnings_catalyst", "Resultados", yesno, ""),
     ("rev_yoy_q0", "Ventas YoY", pct, ""),
-    ("stop_ref", "Stop", price, "Mínimo de la consolidación"),
-    ("risk_pct", "Riesgo", lambda v: pct(v, 1, False), ""),
-]
+] + PLAN_COLS
 
 REJECTED_COLS = [
     ("*", "Ticker", ticker_cell, ""),
@@ -189,6 +212,9 @@ FOLLOW_COLS = [
     ("close", "Cierre", price, ""),
     ("ep_lod", "LOD EP", price, ""),
     ("gap_filled", "Gap cubierto", yesno, "Algún mínimo posterior tocó el cierre previo al gap"),
+    ("sma10", "MM10", price, ""),
+    ("sma20", "MM20", price, ""),
+    ("action", "Acción sugerida", plain, "Reglas de gestión contando ruedas desde el día del EP"),
 ]
 
 
@@ -234,8 +260,13 @@ def render(ctx: dict) -> str:
             ("En seguimiento", len(fu), "fu"), ("Descartados", len(ctx["rejected"]), "rj")]
     kpi_html = "".join(f'<a class="kpi" href="#{a}"><span>{v}</span><small>{k}</small></a>' for k, v, a in kpis)
     tr = ctx["tracking"]
+    tc = ctx["cfg"].TRADE
     cfg = ctx["cfg"]
 
+    q_ok = reg.get("qqq_ema_ok")
+    QQQ = ("" if q_ok is None else
+           f'<p class="qqq {"ok" if q_ok else "bad-t"}">QQQ: EMA10 {"sobre" if q_ok else "debajo de"} EMA20 · '
+           f'{"luz verde para operar" if q_ok else "reducir tamaño o esperar"}</p>')
     PROV = ('<section class="prov"><strong>Reporte provisional</strong> Se generó con el mercado abierto: '
             'la barra del día todavía no cerró, así que gaps, volumen y cierres pueden cambiar. '
             'No se registraron señales. El reporte definitivo sale con la corrida automática posterior al cierre.</section>'
@@ -257,10 +288,18 @@ def render(ctx: dict) -> str:
   {PROV}
   <section class="regime {reg_cls}">
     <div><small>Contexto de mercado</small><strong>{reg['label']}</strong>
-    <p>Los EPs rinden mucho mejor con índices en tendencia. En contexto desfavorable, más gaps se devuelven en el día.</p></div>
+    <p>Los EPs rinden mucho mejor con índices en tendencia. En contexto desfavorable, más gaps se devuelven en el día.</p>
+    {QQQ}</div>
     <div class="ixs">{chips}</div>
   </section>
   <nav class="kpis">{kpi_html}</nav>
+  <section class="calcbar">
+    <strong>Tamaño de posición</strong>
+    <label>Capital USD <input id="cap" type="number" min="0" step="1000" placeholder="100000"></label>
+    <label>Riesgo por trade % <input id="rk" type="number" min="0" step="0.05" value="{tc['default_risk_pct']}"></label>
+    <label>Máx. por posición % <input id="mx" type="number" min="0" step="1" value="{tc['default_max_position_pct']}"></label>
+    <small>Se guarda sólo en este navegador; no se sube a ningún lado. Qullamaggie: riesgo 0,25–1% por trade, posiciones de 10–20% (nunca más de 25–30%).</small>
+  </section>
 
   <section id="ep"><h2>EPs del día</h2>
   <p class="sub">Gap ≥ {pct(cfg.EP['min_gap'], 0, False)}, RVol ≥ {cfg.EP['min_rvol']:.0f}x, operado ≥ {money(cfg.EP['min_dollar_vol'])} USD{', sin devolver el gap entero' if cfg.EP['require_hold'] else ''}. Ordenados por score.</p>
@@ -279,17 +318,27 @@ def render(ctx: dict) -> str:
   <p class="sub">Cumplieron gap/volumen pero no los filtros de calidad (precio ≥ {cfg.QUALITY['min_price']:.0f}, cierre en la mitad superior del rango, no más de {pct(-cfg.QUALITY['max_off_52wh'], 0, False)} abajo del máximo de 52 semanas, sin pump de más de {pct(cfg.QUALITY['max_prior_runup'], 0, False)} en las {cfg.QUALITY['runup_window']} ruedas previas). Se listan para auditar los filtros, no para operar.</p>
   {table(ctx['rejected'], REJECTED_COLS, 'Ningún descarte hoy.')}</section>
 
-  <section id="fu"><h2>Seguimiento de EPs recientes</h2>
-  <p class="sub">Todos los EPs de las últimas {cfg.FOLLOWUP['days']} ruedas y cómo vienen. Útil para gestionar posiciones abiertas.</p>
+  <section id="fu"><h2>Gestión de EPs recientes</h2>
+  <p class="sub">EPs de las últimas {cfg.FOLLOWUP['days']} ruedas con la acción que marcan las reglas: parcial de 1/3–1/2 entre los días {tc['partial_days'][0]} y {tc['partial_days'][1]} si está en ganancia (con stop a breakeven), y después salida en el primer cierre bajo la MM{tc['trail_ma']}. Las ruedas se cuentan desde el día del EP: si entraste un día después, corré la cuenta.</p>
   {table(fu, FOLLOW_COLS, 'Sin EPs en las últimas ruedas.')}</section>
 
   <section id="st"><h2>Resultados históricos del scanner</h2>
   <p class="sub">Señales registradas: {tr['total']} · cerradas: {tr['closed']} · abiertas: {tr['open']} · pendientes de entrada: {tr['pending']} · invalidadas: {tr['invalid']}.
-  Simulación: entrada en la apertura siguiente, stop en el LOD (o mínimo de la consolidación en delayed EPs), salida por stop o a las {cfg.TRACKING['horizon']} ruedas. Sin comisiones ni slippage.</p>
+  Simulación con las reglas de Qullamaggie: entrada en la apertura siguiente; stop en el LOD (o mínimo de la consolidación) con tope de {tc['max_stop_adr']:g} ADR; venta de {tc['partial_fraction'] * 100:.0f}% entre los días {tc['partial_days'][0]} y {tc['partial_days'][1]} si está en ganancia, con stop a breakeven; el resto sale en el primer cierre bajo la MM{tc['trail_ma']}. Sin comisiones ni slippage.</p>
   <h3>Por tipo de señal</h3>{stats_table(ctx['stats_type'], cfg.TRACKING['min_sample_warning'], 'Tipo')}
   <h3>Por tipo y contexto de mercado al momento de la señal</h3>{stats_table(ctx['stats_regime'], cfg.TRACKING['min_sample_warning'], 'Tipo · contexto')}
   <p class="note">Un scanner diario no ve la apertura: el trade real de día 1 (compra en el ORH, stop en el LOD) va a tener otro resultado que el simulado acá. Esta tabla sirve para comparar tipos de señal y contextos entre sí, no como estimación exacta del rendimiento.</p>
   </section>
+
+  <details class="how"><summary>Reglas de ejecución (Qullamaggie)</summary>
+  <p><b>Qué operar.</b> Gap de 10% o más con volumen enorme: idealmente opera su volumen diario promedio en los primeros 15–30 minutos. Mejor si venía lateral 3–6 meses y, si el catalizador son resultados, con crecimiento de EPS y ventas de dos o tres dígitos y una sorpresa fuerte.</p>
+  <p><b>Entrada.</b> Ruptura del opening range high: máximo de la primera vela de 1, 5 o 60 minutos. Se puede sumar durante el día si la acción se comporta bien. El setup se identifica en el after-hours o el premarket.</p>
+  <p><b>Stop.</b> Mínimo del día. Si queda más ancho que 1 ADR (como mucho 1,5), se achica la posición o no se opera.</p>
+  <p><b>Tamaño.</b> Riesgo de 0,25–1% de la cuenta por trade. Posiciones de 10–20%, nunca más de 25–30% en una sola acción de un día para otro.</p>
+  <p><b>Salida.</b> Vender 1/3–1/2 a los 3–5 días y subir el stop a breakeven. El resto, con la MM10 o MM20: se sale en el primer cierre debajo, no en un toque intradiario.</p>
+  <p><b>Mercado.</b> Operar con los índices en tendencia. Referencia práctica: EMA10 de QQQ sobre la EMA20.</p>
+  <p><b>Estadística esperable.</b> Él declaró tasas de acierto de 25–35%: el sistema vive de pocos ganadores grandes.</p>
+  </details>
 
   <details class="how"><summary>Cómo leer el score</summary>
   <p>Ordena las señales; no es una señal en sí misma. Tamaño del gap (20), volumen relativo (20), neglect: cuánto subió en los 3 meses previos (20), cierre dentro del rango del día (15) y catalizador/números: resultados en la fecha, sorpresa de EPS y crecimiento de ventas (25).</p>
@@ -343,6 +392,11 @@ tbody tr:hover{background:color-mix(in srgb,var(--acc) 7%,transparent)}
 .warn-s{font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:3px;padding:0 4px;margin-left:6px}
 .note{font-size:12px;color:var(--mut);border-left:3px solid var(--line);padding-left:10px}
 .prov{border-left:4px solid var(--warn);background:var(--warnb);color:var(--ink)}.prov strong{color:var(--warn);margin-right:6px}
+.calcbar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}
+.calcbar label{font-size:13px;color:var(--mut)}.calcbar input{width:110px;margin-left:6px;padding:4px 6px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--ink)}
+.calcbar small{flex-basis:100%;color:var(--mut)}
+.warn-t{color:var(--warn)}.bad-t{color:var(--bad)}.qqq{font-weight:600;margin-top:6px!important}
+.calc small{color:var(--mut)}
 .how{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;color:var(--mut)}
 .how summary{cursor:pointer;color:var(--ink);font-weight:600}
 footer{padding:18px 0 40px;color:var(--mut);font-size:12px}footer a{color:var(--acc)}
@@ -350,6 +404,26 @@ footer{padding:18px 0 40px;color:var(--mut);font-size:12px}footer a{color:var(--
 """
 
 JS = """
+(function(){
+  const ids=['cap','rk','mx'];
+  const get=k=>{try{return localStorage.getItem('ep_'+k)}catch(e){return null}};
+  const put=(k,v)=>{try{localStorage.setItem('ep_'+k,v)}catch(e){}};
+  ids.forEach(id=>{const el=document.getElementById(id);if(!el)return;const v=get(id);if(v!==null&&v!=='')el.value=v;
+    el.addEventListener('input',()=>{put(id,el.value);calc();});});
+  const fmt=n=>n.toLocaleString('es-AR',{maximumFractionDigits:0});
+  function calc(){
+    const cap=parseFloat((document.getElementById('cap')||{}).value),rk=parseFloat((document.getElementById('rk')||{}).value),
+          mx=parseFloat((document.getElementById('mx')||{}).value);
+    document.querySelectorAll('.calc').forEach(c=>{
+      const e=parseFloat(c.dataset.e),s=parseFloat(c.dataset.s);
+      if(!(cap>0)||!(rk>0)||!(e>s)){c.textContent='—';return;}
+      const byRisk=cap*rk/100/(e-s),byCap=mx>0?cap*mx/100/e:Infinity,sh=Math.floor(Math.min(byRisk,byCap));
+      const capped=byCap<byRisk;
+      c.innerHTML=fmt(sh)+' acc · USD '+fmt(sh*e)+(capped?' <small>(tope '+mx+'%: riesgo '+(sh*(e-s)/cap*100).toFixed(2)+'%)</small>':'');
+    });
+  }
+  calc();
+})();
 document.querySelectorAll('table.sortable').forEach(t=>{
   t.querySelectorAll('th').forEach((th,i)=>th.addEventListener('click',()=>{
     const tb=t.tBodies[0],rows=[...tb.rows],asc=!th.classList.contains('desc')&&th.classList.contains('asc')?false:!th.classList.contains('asc');
@@ -379,3 +453,13 @@ def write(out_dir: Path, ctx: dict) -> None:
     ctx["signals"].to_csv(out_dir / "data" / "signals.csv", index=False)
     st = ctx["stats_type"]
     (st if st is not None and not st.empty else pd.DataFrame()).to_csv(out_dir / "data" / "stats.csv")
+
+
+# El plan de trade va adelante (es lo accionable); el detalle, a la derecha.
+def _front(cols, n):
+    base = [c for c in cols if c not in PLAN_COLS]
+    return base[:n] + PLAN_COLS + base[n:]
+
+
+EP_COLS = _front(EP_COLS, 5)
+DELAYED_COLS = _front(DELAYED_COLS, 5)

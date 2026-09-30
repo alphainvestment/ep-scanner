@@ -1,11 +1,16 @@
-"""Registro histórico de señales y cálculo de resultados (en R) para medir el edge real.
+"""Registro histórico de señales y simulación de resultados (en R) con las reglas de Qullamaggie.
 
-Supuestos de la simulación (declarados en el reporte):
-  - Entrada: apertura de la rueda siguiente a la señal.
-  - Stop: `stop` registrado con la señal. Si la apertura de entrada ya está debajo, la señal queda 'invalid'.
-  - Si una rueda abre debajo del stop, la salida es la apertura (gap en contra); si no, el stop.
-  - Si no toca el stop, sale al cierre de la rueda N° `horizon` (contando la de entrada).
-  - Mismo día: si una rueda toca el stop se asume que el stop se ejecutó antes que cualquier máximo.
+Supuestos (declarados en el reporte):
+  - Entrada: apertura de la rueda siguiente a la señal (el scanner corre al cierre; no ve el ORH).
+  - Stop inicial: el de la señal (LOD o mínimo de la consolidación), ajustado para que no quede
+    más ancho que `max_stop_adr` × ADR desde la entrada real. Si la apertura ya está debajo: 'invalid'.
+  - Parcial: `partial_fraction` al cierre del primer día entre `partial_days` en que esté en
+    ganancia; después el stop sube a breakeven.
+  - Resto: sale en el primer cierre debajo de la media de `trail_ma` ruedas, una vez que esa
+    media superó el stop inicial. Tope de seguridad: `max_bars` ruedas.
+  - Si una rueda abre debajo del stop, sale en la apertura; si lo toca en el día, sale en el stop.
+    Se asume que el stop se ejecuta antes que cualquier máximo del mismo día.
+  - Sin comisiones ni slippage.
 """
 from __future__ import annotations
 
@@ -15,8 +20,8 @@ import numpy as np
 import pandas as pd
 
 COLUMNS = [
-    "signal_date", "ticker", "type", "score", "regime", "ref_close", "stop",
-    "status", "entry_date", "entry", "exit_date", "exit", "exit_reason", "r",
+    "signal_date", "ticker", "type", "score", "regime", "ref_close", "stop", "adr",
+    "status", "entry_date", "entry", "stop_used", "partial_date", "exit_date", "exit", "exit_reason", "r",
     "ret_5", "ret_10", "ret_20", "mfe_r", "mae_r", "bars",
 ]
 
@@ -46,60 +51,77 @@ def append_signals(log: pd.DataFrame, new_rows: list[dict]) -> pd.DataFrame:
     return pd.concat([log, new[COLUMNS]], ignore_index=True)
 
 
-def evaluate(sig: dict, df: pd.DataFrame, horizon: int, horizons: list[int]) -> dict:
+def evaluate(sig: dict, df: pd.DataFrame, tc: dict, horizons: list[int]) -> dict:
     """Recalcula el resultado de una señal con los precios disponibles."""
     out = {}
     sd = pd.Timestamp(sig["signal_date"])
-    after = df[df.index > sd]
+    after = df[df.index > sd].iloc[: tc["max_bars"]]
     if after.empty:
         return dict(status="pending")
-    stop = float(sig["stop"])
     entry = float(after["Open"].iat[0])
-    risk = entry - stop
-    out.update(entry_date=after.index[0].date().isoformat(), entry=entry)
+    stop0 = float(sig["stop"])
+    adr = pd.to_numeric(sig.get("adr"), errors="coerce")
+    if pd.notna(adr) and adr > 0:
+        stop0 = max(stop0, entry * (1 - tc["max_stop_adr"] * adr))
+    risk = entry - stop0
+    out.update(entry_date=after.index[0].date().isoformat(), entry=entry, stop_used=stop0)
     if risk <= 0:
         return dict(out, status="invalid", exit_reason="abrió bajo el stop")
 
-    bars = after.iloc[:horizon]
-    closes = bars["Close"].to_numpy()
+    closes = after["Close"].to_numpy()
     for h in horizons:
         out[f"ret_{h}"] = closes[h - 1] / entry - 1 if len(closes) >= h else np.nan
+    ma = df["Close"].rolling(tc["trail_ma"]).mean().reindex(after.index).to_numpy()
 
-    exit_px, exit_i, reason = None, None, None
-    for k in range(len(bars)):
-        o, lo = bars["Open"].iat[k], bars["Low"].iat[k]
+    d_min, d_max = tc["partial_days"]
+    frac = tc["partial_fraction"]
+    rem, realized, stop = 1.0, 0.0, stop0
+    partial_date = exit_px = exit_i = reason = None
+    for k in range(len(after)):
+        o, hi, lo, c = (float(after[x].iat[k]) for x in ("Open", "High", "Low", "Close"))
         if k > 0 and o <= stop:
             exit_px, exit_i, reason = o, k, "gap bajo stop"
             break
         if lo <= stop:
-            exit_px, exit_i, reason = stop, k, "stop"
+            exit_px, exit_i = stop, k
+            reason = "breakeven" if partial_date and stop >= entry else "stop"
             break
-    if exit_px is None and len(bars) >= horizon:
-        exit_px, exit_i, reason = closes[horizon - 1], horizon - 1, f"tiempo ({horizon} ruedas)"
+        day = k + 1
+        if partial_date is None and d_min <= day <= d_max and c > entry:
+            realized += frac * (c - entry) / risk
+            rem -= frac
+            stop = max(stop, entry)
+            partial_date = after.index[k].date().isoformat()
+        if pd.notna(ma[k]) and ma[k] > stop0 and c < ma[k]:
+            exit_px, exit_i, reason = c, k, f"cierre < MM{tc['trail_ma']}"
+            break
+    if exit_px is None and len(after) >= tc["max_bars"]:
+        exit_px, exit_i, reason = closes[-1], len(after) - 1, f"tope {tc['max_bars']} ruedas"
 
-    last_i = exit_i if exit_i is not None else len(bars) - 1
-    path = bars.iloc[:last_i + 1]
-    out["mfe_r"] = (path["High"].max() - entry) / risk
-    out["mae_r"] = (path["Low"].min() - entry) / risk
-    out["bars"] = last_i + 1
+    last_i = exit_i if exit_i is not None else len(after) - 1
+    path = after.iloc[: last_i + 1]
+    out.update(mfe_r=(path["High"].max() - entry) / risk, mae_r=(path["Low"].min() - entry) / risk,
+               bars=last_i + 1, partial_date=partial_date)
     if exit_px is None:
-        out.update(status="open", r=(closes[-1] - entry) / risk)
+        out.update(status="open", r=realized + rem * (closes[-1] - entry) / risk)
     else:
         out.update(status="closed", exit=float(exit_px), exit_reason=reason,
-                   exit_date=bars.index[exit_i].date().isoformat(), r=(exit_px - entry) / risk)
+                   exit_date=after.index[exit_i].date().isoformat(),
+                   r=realized + rem * (exit_px - entry) / risk)
     return out
 
 
-def update(log: pd.DataFrame, prices: dict[str, pd.DataFrame], horizon: int,
+def update(log: pd.DataFrame, prices: dict[str, pd.DataFrame], tc: dict,
            horizons: list[int]) -> pd.DataFrame:
-    log = log.copy().astype({c: "object" for c in ["status", "entry_date", "exit_date", "exit_reason"]})
+    log = log.copy().astype({c: "object" for c in
+                             ["status", "entry_date", "exit_date", "exit_reason", "partial_date"]})
     for i, sig in log.iterrows():
         if sig["status"] in ("closed", "invalid"):
             continue
         df = prices.get(sig["ticker"])
         if df is None:
             continue
-        for k, v in evaluate(sig.to_dict(), df, horizon, horizons).items():
+        for k, v in evaluate(sig.to_dict(), df, tc, horizons).items():
             log.at[i, k] = v
     return log
 

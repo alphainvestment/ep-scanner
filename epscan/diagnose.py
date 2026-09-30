@@ -13,6 +13,10 @@ from . import detect
 from .score import score
 
 
+def _u(x):
+    return "—" if x is None or pd.isna(x) else f"{x * 100:.1f}%"
+
+
 def _p(x, d=1):
     return "—" if x is None or pd.isna(x) else f"{x * 100:+.{d}f}%"
 
@@ -71,6 +75,20 @@ def diagnose(cfg, fetcher, ticker: str, day: str) -> str:
     verdict = ("EP del día" if is_ep else "9M EP" if is_9m else "no califica por gap/volumen")
     if (is_ep or is_9m) and reasons:
         verdict = f"DESCARTADO ({' · '.join(reasons)})"
+    pl = detect.plan(ev, "EP", cfg.TRADE)
+    adr = ev.get("adr")
+    lines += ["", "### Plan de trade (visto al cierre)", "| Dato | Valor |", "|---|---|",
+              f"| ADR 20 ruedas previas | {_u(adr)} |",
+              f"| Entrada de referencia (cierre) | {pl.get('plan_entry', float('nan')):.2f} |",
+              f"| Stop natural (LOD) | {pl.get('plan_natural_stop', float('nan')):.2f} |",
+              f"| Ancho del stop natural | {pl.get('stop_adr', float('nan')):.1f} ADR "
+              f"({'operable' if pl.get('stop_adr', 99) <= 1.5 else 'demasiado ancho: achicar o esperar un delayed EP'}) |",
+              f"| Stop del plan (tope {cfg.TRADE['max_stop_adr']:g} ADR) | {pl.get('plan_stop', float('nan')):.2f} "
+              f"(riesgo {_u(pl.get('plan_stop_pct'))}) |"]
+    if adr is not None and adr > 0:
+        lod, op = r["Low"], r["Open"]
+        lines.append(f"| Día 1 con entrada en la apertura ({op:.2f}) y stop LOD | riesgo "
+                     f"{(op - lod) / op * 100:.1f}% = {(op - lod) / op / adr:.1f} ADR |")
     lines += ["", f"**Resultado:** {verdict} · Score técnico (sin fundamentals): {score(ev)}"]
     out = "\n".join(lines)
     path = os.environ.get("GITHUB_STEP_SUMMARY")

@@ -17,6 +17,10 @@ def prep(df: pd.DataFrame, avg_window: int = 50) -> pd.DataFrame:
     d["dollar_vol"] = d["Close"] * d["Volume"]
     for w in (10, 20, 50):
         d[f"sma{w}"] = d["Close"].rolling(w).mean()
+    # ADR% de las 20 ruedas PREVIAS (sin el día del evento, que infla el rango)
+    d["adr"] = (d["High"] / d["Low"] - 1).rolling(20, min_periods=10).mean().shift(1)
+    d["ema10"] = d["Close"].ewm(span=10, adjust=False).mean()
+    d["ema20"] = d["Close"].ewm(span=20, adjust=False).mean()
     rng = d["High"] - d["Low"]
     d["close_pos"] = np.where(rng > 0, (d["Close"] - d["Low"]) / rng.where(rng > 0, 1), 0.5)
     return d
@@ -96,6 +100,7 @@ def event_row(d: pd.DataFrame, i: int, ticker: str, neg_cfg: dict) -> dict:
         prev_close=r["prev_close"], gap=r["gap"], chg=r["chg"], rvol=r["rvol"],
         volume=r["Volume"], dollar_vol=r["dollar_vol"], close_pos=r["close_pos"],
         stop_ref=r["Low"], risk_pct=(r["Close"] / r["Low"] - 1) if r["Low"] > 0 else np.nan,
+        adr=r["adr"],
     )
     row.update(neglect_at(d, i, neg_cfg))
     return row
@@ -143,6 +148,7 @@ def scan_ticker(ticker: str, df: pd.DataFrame, asof: pd.Timestamp, cfg) -> dict:
             ep_gap=d["gap"].iat[e], ep_rvol=d["rvol"].iat[e], ep_close=c[e], ep_lod=lod,
             close=c[t], ret_since=c[t] / c[e] - 1,
             max_gain=d["High"].iloc[e:t + 1].max() / c[e] - 1,
+            sma10=d["sma10"].iat[t], sma20=d["sma20"].iat[t],
             above_sma10=bool(c[t] >= d["sma10"].iat[t]) if pd.notna(d["sma10"].iat[t]) else None,
             above_sma20=bool(c[t] >= d["sma20"].iat[t]) if pd.notna(d["sma20"].iat[t]) else None,
             lod_broken=bool(post_close_min < lod) if e < t else False,
@@ -194,9 +200,9 @@ def _delayed(d: pd.DataFrame, e: int, t: int, ticker: str, cfg) -> dict | None:
     near = from_high >= -dc["max_from_high"]
 
     if breakout:
-        kind, stop = "Breakout", prior["Low"].min()
+        kind, stop, trigger = "Breakout", prior["Low"].min(), c[t]
     elif tight and near:
-        kind, stop = "Setup", tw["Low"].min()
+        kind, stop, trigger = "Setup", tw["Low"].min(), tw["High"].max()
     else:
         return None
 
@@ -209,7 +215,7 @@ def _delayed(d: pd.DataFrame, e: int, t: int, ticker: str, cfg) -> dict | None:
         close=c[t], chg=d["chg"].iat[t], rvol=d["rvol"].iat[t], from_high=from_high,
         tight_range=tight_range,
         vol_dryup=tw["Volume"].mean() / d["Volume"].iat[e] if d["Volume"].iat[e] > 0 else np.nan,
-        ret_since_ep=c[t] / c[e] - 1, stop_ref=stop,
+        ret_since_ep=c[t] / c[e] - 1, stop_ref=stop, trigger=trigger, adr=d["adr"].iat[t],
         risk_pct=c[t] / stop - 1 if stop > 0 else np.nan,
         dollar_vol=d["dollar_vol"].iat[t],
     )
@@ -226,13 +232,35 @@ def market_regime(prices: dict[str, pd.DataFrame], indices: list[str]) -> dict:
         s20, s50 = c.rolling(20).mean(), c.rolling(50).mean()
         a20, a50 = bool(c.iat[-1] > s20.iat[-1]), bool(c.iat[-1] > s50.iat[-1])
         up20 = bool(s20.iat[-1] > s20.iat[-6])
+        e10, e20 = c.ewm(span=10, adjust=False).mean(), c.ewm(span=20, adjust=False).mean()
         pts += a20 + a50 + up20
         total += 3
         rows.append(dict(symbol=sym, close=c.iat[-1], chg=c.iat[-1] / c.iat[-2] - 1,
                          above_sma20=a20, above_sma50=a50, sma20_up=up20,
+                         ema10_gt_ema20=bool(e10.iat[-1] > e20.iat[-1]),
                          ret_1m=c.iat[-1] / c.iat[-22] - 1))
     if not total:
         return dict(label="Sin datos", score=None, indices=rows)
     share = pts / total
     label = "Favorable" if share >= 0.75 else "Neutral" if share >= 0.45 else "Desfavorable"
-    return dict(label=label, score=share, indices=rows)
+    qqq = next((r for r in rows if r["symbol"] == "QQQ"), None)
+    return dict(label=label, score=share, indices=rows,
+                qqq_ema_ok=None if qqq is None else qqq["ema10_gt_ema20"])
+
+
+# ── Plan de trade ───────────────────────────────────────────────────────────
+def plan(row: dict, kind: str, tc: dict) -> dict:
+    """Entrada de referencia, stop natural (LOD o consolidación) y stop con tope ADR."""
+    entry = row["trigger"] if kind == "Setup" else row["close"]
+    natural = row["stop_ref"]
+    adr = row.get("adr")
+    out = dict(plan_entry=entry, plan_natural_stop=natural)
+    if entry is None or natural is None or not entry > 0:
+        return out
+    width = (entry - natural) / entry
+    out["stop_adr"] = width / adr if adr and adr > 0 else np.nan
+    cap = entry * (1 - tc["max_stop_adr"] * adr) if adr and adr > 0 else natural
+    stop = max(natural, cap)
+    out.update(plan_stop=stop, plan_stop_pct=(entry - stop) / entry,
+               stop_capped=bool(stop > natural + 1e-9))
+    return out

@@ -102,7 +102,7 @@ def build_universe():
     c, v = flat(18, 7e5)
     df = with_gap(series(c, v), N - 41, 0.16, 1.03, 6e6)
     lvl = df["Close"].iat[N - 41]
-    path = lvl * np.linspace(1.01, 1.45, 40)
+    path = lvl * np.r_[np.linspace(1.01, 1.45, 30), np.linspace(1.42, 1.25, 10)]  # sube y después corrige
     for j, k in enumerate(range(N - 40, N)):
         df.iloc[k] = [path[j] * 0.995, path[j] * 1.01, path[j] * 0.985, path[j], 8e5]
     u["OLD"] = df
@@ -191,28 +191,48 @@ def test_score_orders_quality():
 
 
 def test_tracker_evaluate():
-    idx = pd.bdate_range("2026-01-05", periods=30)
+    tc = cfg.TRADE
+    idx = pd.bdate_range("2026-01-05", periods=40)
     base = pd.DataFrame({"Open": 10.0, "High": 10.2, "Low": 9.9, "Close": 10.0, "Volume": 1e6}, index=idx)
-    sig = dict(signal_date=idx[0].date().isoformat(), stop=9.5)
-    # a) sube: sale por tiempo con R positivo
-    up = base.copy()
-    up["Close"] = np.linspace(10, 12, 30); up["Open"] = up["Close"].shift(1).fillna(10)
-    up["High"] = up[["Open", "Close"]].max(axis=1) * 1.005; up["Low"] = up[["Open", "Close"]].min(axis=1) * 0.998
-    e = tracker.evaluate(sig, up, 20, [5, 10, 20])
-    assert e["status"] == "closed" and e["r"] > 0 and e["exit_reason"].startswith("tiempo"), e
-    # b) toca el stop en la rueda 3
+    sd = idx[0].date().isoformat()
+    sig = dict(signal_date=sd, stop=9.5)
+
+    def path(closes):
+        df = base.copy().iloc[: len(closes)]
+        df["Close"] = closes
+        df["Open"] = df["Close"].shift(1).fillna(closes[0])
+        df["High"] = df[["Open", "Close"]].max(axis=1) * 1.003
+        df["Low"] = df[["Open", "Close"]].min(axis=1) * 0.997
+        return df
+
+    # a) sube en forma sostenida: parcial en el día 3, stop a breakeven, sigue abierta
+    up = path(list(np.linspace(10, 14, 40)))
+    e = tracker.evaluate(sig, up, tc, [5, 10, 20])
+    assert e["status"] == "open" and e["partial_date"] is not None and e["r"] > 2, e
+    # b) toca el stop sin haber estado en ganancia: -1R
     dn = base.copy(); dn.iloc[3, dn.columns.get_loc("Low")] = 9.4
-    e = tracker.evaluate(sig, dn, 20, [5])
+    e = tracker.evaluate(sig, dn, tc, [5])
     assert e["status"] == "closed" and abs(e["r"] + 1) < 1e-9 and e["exit_reason"] == "stop", e
-    # c) gap bajo el stop: sale en la apertura, pierde más de 1R
+    # c) gap bajo el stop: pierde más de 1R
     gp = base.copy(); gp.iloc[4, gp.columns.get_loc("Open")] = 9.0; gp.iloc[4, gp.columns.get_loc("Low")] = 8.9
-    e = tracker.evaluate(sig, gp, 20, [5])
+    e = tracker.evaluate(sig, gp, tc, [5])
     assert e["exit_reason"] == "gap bajo stop" and e["r"] < -1, e
-    # d) abre debajo del stop al día siguiente: inválida
+    # d) abre debajo del stop: inválida;  e) sin rueda posterior: pendiente
     inv = base.copy(); inv.iloc[1, inv.columns.get_loc("Open")] = 9.4
-    assert tracker.evaluate(sig, inv, 20, [5])["status"] == "invalid"
-    # e) sin rueda posterior: pendiente
-    assert tracker.evaluate(dict(signal_date=idx[-1].date().isoformat(), stop=9.5), base, 20, [5])["status"] == "pending"
+    assert tracker.evaluate(sig, inv, tc, [5])["status"] == "invalid"
+    assert tracker.evaluate(dict(signal_date=idx[-1].date().isoformat(), stop=9.5), base, tc, [5])["status"] == "pending"
+    # f) sube y después cierra bajo la MM10: parcial + salida por trailing, R total positivo
+    closes = list(np.linspace(10, 13, 16)) + [12.8, 12.5, 12.2, 11.9]
+    e = tracker.evaluate(sig, path(closes), tc, [5])
+    assert e["status"] == "closed" and e["exit_reason"] == "cierre < MM10" and e["r"] > 1, e
+    # g) hace el parcial y vuelve a la entrada: sale en breakeven, R = sólo el parcial
+    bk = path([10, 10.3, 10.6, 10.9, 10.7, 10.4, 10.1] + [10.0] * 5)
+    bk.iloc[7, bk.columns.get_loc("Low")] = 9.95
+    e = tracker.evaluate(sig, bk, tc, [5])
+    assert e["exit_reason"] == "breakeven" and 0 < e["r"] < 1, e
+    # h) el stop se ajusta para no superar 1 ADR desde la entrada
+    e = tracker.evaluate({**sig, "adr": 0.02}, base, tc, [5])
+    assert abs(e["stop_used"] - 9.8) < 1e-9, e
 
 
 AFTER_CLOSE = lambda d: pd.Timestamp(d).tz_localize("America/New_York") + pd.Timedelta(hours=18)
@@ -271,7 +291,7 @@ def test_end_to_end():
         sig = pd.read_csv(tmp / "data" / "signals.csv")
         assert {"EP", "DEP", "9M"} <= set(sig["type"])
         old = sig[(sig["ticker"] == "OLD") & (sig["type"] == "EP")].iloc[0]
-        assert old["status"] == "closed" and old["r"] > 0, old.to_dict()
+        assert old["status"] == "closed" and old["r"] > 0 and old["exit_reason"] == "cierre < MM10", old.to_dict()
         assert ctx["stats_type"].loc["EP", "n"] == 1
         for f in ("ep_today", "nine_m", "delayed", "followup", "signals", "stats"):
             assert (tmp / "docs" / "data" / f"{f}.csv").exists()

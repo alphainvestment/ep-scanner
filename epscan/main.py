@@ -103,17 +103,26 @@ def run(cfg, fetcher, root: Path = ROOT, force: bool = False, fundamentals: bool
         r.setdefault("name", names.get(r["ticker"], ""))
         r["score"] = score({**r, "gap": r["ep_gap"], "rvol": r["ep_rvol"], "close_pos": r["ep_close_pos"],
                             "chg": None})
+    # Plan de trade (entrada de referencia, stop con tope ADR) y acción sugerida en el seguimiento
+    for r in ep + nine_m:
+        r.update(detect.plan(r, "EP", cfg.TRADE))
+    for r in delayed:
+        r.update(detect.plan(r, r["kind"], cfg.TRADE))
+    for r in followup:
+        r["action"] = followup_action(r, cfg.TRADE)
     ep.sort(key=lambda r: -r["score"]); nine_m.sort(key=lambda r: -r["score"])
     delayed.sort(key=lambda r: (r["kind"] != "Breakout", -r["score"]))
     followup.sort(key=lambda r: (r["days"], -(r["ret_since"] or 0)))
 
     # 5) Registro de señales y estadísticas
     new = [dict(signal_date=asof_s, ticker=r["ticker"], type="EP", score=r["score"],
-                regime=regime["label"], ref_close=r["close"], stop=r["stop_ref"]) for r in ep]
+                regime=regime["label"], ref_close=r["close"], stop=r["stop_ref"], adr=r.get("adr"))
+            for r in ep]
     new += [dict(signal_date=asof_s, ticker=r["ticker"], type="9M", score=r["score"],
-                 regime=regime["label"], ref_close=r["close"], stop=r["stop_ref"]) for r in nine_m]
+                 regime=regime["label"], ref_close=r["close"], stop=r["stop_ref"], adr=r.get("adr"))
+            for r in nine_m]
     new += [dict(signal_date=asof_s, ticker=r["ticker"], type="DEP", score=r["score"],
-                 regime=regime["label"], ref_close=r["close"], stop=r["stop_ref"])
+                 regime=regime["label"], ref_close=r["close"], stop=r["stop_ref"], adr=r.get("adr"))
             for r in delayed if r["kind"] == "Breakout"]
     # Las pruebas con --tickers y las corridas con mercado abierto no tocan el registro
     record = not tickers and not provisional
@@ -121,7 +130,7 @@ def run(cfg, fetcher, root: Path = ROOT, force: bool = False, fundamentals: bool
         # Una re-corrida del mismo cierre reemplaza las señales pendientes de ese día
         signals = signals[~((signals["signal_date"].astype(str) == asof_s) & (signals["status"] == "pending"))]
         signals = tracker.append_signals(signals.reset_index(drop=True), new)
-    signals = tracker.update(signals, prices, cfg.TRACKING["horizon"], cfg.TRACKING["report_horizons"])
+    signals = tracker.update(signals, prices, cfg.TRADE, cfg.TRACKING["report_horizons"])
     if record:
         signals.to_csv(sig_path, index=False)
     st_type, st_regime = tracker.stats(signals, cfg.TRACKING["report_horizons"])
@@ -141,6 +150,27 @@ def run(cfg, fetcher, root: Path = ROOT, force: bool = False, fundamentals: bool
         state_path.write_text(json.dumps(state, indent=2))
     log.info("Reporte escrito en %s", docs_dir / "index.html")
     return ctx
+
+
+def followup_action(r: dict, tc: dict) -> str:
+    """Acción sugerida según las reglas de gestión, contando ruedas desde el día del EP."""
+    d_min, d_max = tc["partial_days"]
+    ma = r.get("sma10") if tc["trail_ma"] == 10 else r.get("sma20")
+    days, gain = r["days"], r.get("ret_since") or 0
+    if r.get("lod_broken"):
+        return "Salida: cerró bajo el LOD del EP"
+    if days == 0:
+        return "Plan para mañana: ORH, stop LOD (tope ADR)"
+    if days < d_min:
+        return "Mantener con el stop inicial"
+    if days <= d_max:
+        return ("Vender 1/3–1/2 y subir el stop a breakeven" if gain > 0
+                else "Mantener: sin parcial, no está en ganancia")
+    if ma is not None and pd.notna(ma):
+        if r["close"] < ma:
+            return f"Salida: cerró bajo MM{tc['trail_ma']} ({ma:.2f})"
+        return f"Trailing: salir si cierra bajo {ma:.2f} (MM{tc['trail_ma']})"
+    return "Trailing con MM10/MM20"
 
 
 def cli():
