@@ -24,7 +24,7 @@ EP = dict(
     min_gap=0.08,                  # apertura vs cierre previo
     min_rvol=3.0,                  # volumen del día / promedio de 50 ruedas previas
     avg_vol_window=50,
-    min_price=3.0,
+    min_price=2.0,
     min_dollar_vol=10_000_000,     # USD operados el día del gap
     require_hold=True,             # descarta los que cerraron debajo del cierre previo (gap devuelto entero)
 )
@@ -34,15 +34,33 @@ NINE_M = dict(
     min_volume=9_000_000,
     min_change=0.04,               # variación cierre a cierre
     min_rvol=2.0,                  # evita las mega caps que operan 9M todos los días
-    min_price=3.0,
+    min_price=2.0,
+)
+
+# ── Filtros de calidad ──────────────────────────────────────────────────────
+# Separan un EP de un pump de microcap. Lo que no los pasa va a la lista de
+# "Descartados" del reporte con el motivo, para poder auditar los filtros.
+QUALITY = dict(
+    min_price=2.0,                 # precio de cierre mínimo el día de la señal
+    min_close_pos=0.50,            # cierre en la mitad superior del rango del día (sólo día 1)
+    max_off_52wh=-0.70,            # descarta acciones destruidas: cierre previo a más de 70% del máx. 52 sem.
+    runup_window=10,               # ruedas previas para medir un pump anterior
+    max_prior_runup=1.00,          # máx/mín de esas ruedas: más de +100% = ya venía bombeada
 )
 
 # ── Neglect (acción olvidada antes del catalizador) ─────────────────────────
+# Olvidada = lateral, no desplomada: la variación de 3 meses tiene que estar en [min_ret, max_ret].
 NEGLECT = dict(
     lookback=63,                   # ~3 meses de ruedas
-    max_ret=0.30,                  # suba máxima en ese período para considerarla "olvidada"
+    min_ret=-0.30,
+    max_ret=0.30,
     max_ext_sma50=0.20,            # distancia máxima a la media de 50 el día previo
 )
+
+# ── Horario ─────────────────────────────────────────────────────────────────
+# Si el scanner corre antes de esta hora (Nueva York) del mismo día, la barra diaria
+# todavía está abierta: genera un reporte PROVISIONAL, sin registrar señales.
+SESSION = dict(final_after="16:30", tz="America/New_York")
 
 # ── Delayed EP ──────────────────────────────────────────────────────────────
 DELAYED = dict(

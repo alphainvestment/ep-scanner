@@ -62,8 +62,30 @@ def neglect_at(d: pd.DataFrame, i: int, cfg: dict) -> dict:
         out["off_52wh"] = c[j] / hi - 1
     if not math.isnan(out["ret_3m"]):
         ext_ok = math.isnan(out["ext_sma50"]) or out["ext_sma50"] <= cfg["max_ext_sma50"]
-        out["neglected"] = bool(out["ret_3m"] <= cfg["max_ret"] and ext_ok)
+        in_band = cfg.get("min_ret", -1.0) <= out["ret_3m"] <= cfg["max_ret"]
+        out["neglected"] = bool(in_band and ext_ok)
     return out
+
+
+def quality_reasons(d: pd.DataFrame, i: int, q: dict, day1: bool = True) -> list[str]:
+    """Motivos por los que el evento i NO califica como EP de calidad (lista vacía = pasa)."""
+    reasons = []
+    c = d["Close"].iat[i]
+    if c < q["min_price"]:
+        reasons.append(f"Precio {c:.2f} < {q['min_price']:.0f}")
+    if day1 and d["close_pos"].iat[i] < q["min_close_pos"]:
+        reasons.append(f"Cierre débil ({d['close_pos'].iat[i] * 100:.0f}% del rango)")
+    if i >= 1:
+        hi = d["High"].iloc[max(0, i - 252):i].max()
+        pc = d["Close"].iat[i - 1]
+        if pd.notna(hi) and hi > 0 and pc / hi - 1 < q["max_off_52wh"]:
+            reasons.append(f"Acción destruida ({(pc / hi - 1) * 100:.0f}% vs máx. 52 sem.)")
+        w = d.iloc[max(0, i - q["runup_window"]):i]
+        if len(w) >= 3 and w["Low"].min() > 0:
+            runup = w["High"].max() / w["Low"].min() - 1
+            if runup > q["max_prior_runup"]:
+                reasons.append(f"Pump previo (+{runup * 100:.0f}% en {q['runup_window']} ruedas)")
+    return reasons
 
 
 def event_row(d: pd.DataFrame, i: int, ticker: str, neg_cfg: dict) -> dict:
@@ -81,7 +103,7 @@ def event_row(d: pd.DataFrame, i: int, ticker: str, neg_cfg: dict) -> dict:
 
 def scan_ticker(ticker: str, df: pd.DataFrame, asof: pd.Timestamp, cfg) -> dict:
     """Devuelve las señales de un ticker al cierre `asof`."""
-    res = dict(ep=[], nine_m=[], delayed=[], followup=[])
+    res = dict(ep=[], nine_m=[], delayed=[], followup=[], rejected=[])
     if df is None or len(df) < 30 or df.index[-1] != asof:
         return res
     d = prep(df, cfg.EP["avg_vol_window"])
@@ -89,19 +111,30 @@ def scan_ticker(ticker: str, df: pd.DataFrame, asof: pd.Timestamp, cfg) -> dict:
     t = n - 1
     em = ep_mask(d, cfg.EP).to_numpy()
     c = d["Close"].to_numpy()
+    q = cfg.QUALITY
+    ok_cache: dict[tuple[int, bool], bool] = {}
 
-    # 1) EP del día
-    if em[t]:
+    def passes(i: int, day1: bool) -> bool:
+        if (i, day1) not in ok_cache:
+            ok_cache[(i, day1)] = not quality_reasons(d, i, q, day1)
+        return ok_cache[(i, day1)]
+
+    # 1) EP del día  /  2) 9M EP (si no es ya un EP clásico)
+    kind = "EP" if em[t] else "9M" if nine_m_mask(d, cfg.NINE_M).iat[t] else None
+    if kind:
         row = event_row(d, t, ticker, cfg.NEGLECT)
         row["is_9m"] = bool(d["Volume"].iat[t] >= cfg.NINE_M["min_volume"])
-        res["ep"].append(row)
-    # 2) 9M EP (si no es ya un EP clásico)
-    elif nine_m_mask(d, cfg.NINE_M).iat[t]:
-        res["nine_m"].append(event_row(d, t, ticker, cfg.NEGLECT))
+        reasons = quality_reasons(d, t, q, day1=True)
+        if reasons:
+            res["rejected"].append({**row, "kind": kind, "reasons": " · ".join(reasons)})
+        else:
+            res["ep" if kind == "EP" else "nine_m"].append(row)
 
-    # 3) Seguimiento de EPs recientes (incluye el de hoy)
+    # 3) Seguimiento de EPs recientes (incluye el de hoy), sólo los que pasaron los filtros
     lo = max(1, t - cfg.FOLLOWUP["days"])
     for e in np.flatnonzero(em[lo:t + 1]) + lo:
+        if not passes(int(e), True):
+            continue
         post_low = d["Low"].iloc[e + 1:t + 1].min() if e < t else np.nan
         post_close_min = d["Close"].iloc[e + 1:t + 1].min() if e < t else np.nan
         lod = d["Low"].iat[e]
@@ -129,8 +162,9 @@ def scan_ticker(ticker: str, df: pd.DataFrame, asof: pd.Timestamp, cfg) -> dict:
     dc = cfg.DELAYED
     if not em[t]:
         lo, hi = max(1, t - dc["max_days"]), t - dc["min_days"]
-        cands = np.flatnonzero(em[lo:hi + 1]) + lo if hi >= lo else []
-        if len(cands):
+        cands = [int(e) for e in (np.flatnonzero(em[lo:hi + 1]) + lo if hi >= lo else [])
+                 if passes(int(e), False)]
+        if len(cands) and c[t] >= q["min_price"]:
             e = int(cands[-1])
             row = _delayed(d, e, t, ticker, cfg)
             if row:

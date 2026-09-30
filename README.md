@@ -10,6 +10,10 @@ Scanner diario, post-cierre, que recorre ~3.000–4.000 acciones US y publica un
 | **Seguimiento** | Todos los EPs de las últimas 20 ruedas con su estado (sobre MM10, perdió el LOD, etc.) |
 | **Resultados** | Registro de cada señal y su resultado simulado en R, por tipo y por contexto de mercado |
 
+Antes de listar un EP, aplica filtros de calidad para separarlo de los pumps de microcaps: precio ≥ USD 2, cierre en la mitad superior del rango, no más de 70% abajo del máximo de 52 semanas y sin una suba de más de 100% en las 10 ruedas previas. Lo que no pasa va a la sección **Descartados**, con el motivo.
+
+Si se corre con el mercado abierto, el reporte sale marcado como **provisional** y no registra señales. El definitivo lo genera la corrida automática posterior al cierre.
+
 Cada señal lleva métricas de *neglect* (suba de 3 meses previa, distancia a MM50), fundamentals de Yahoo (resultados en la fecha, sorpresa de EPS, crecimiento de ventas y aceleración) y un score 0–100 para ordenar.
 
 ## Estructura
@@ -39,6 +43,10 @@ tests/                  tests offline con series sintéticas
 5. Primera corrida completa: **Run workflow** con el campo *tickers* vacío. La primera corrida completa tarda más que las siguientes porque arma el universo (descarga ~6.000 símbolos para filtrar liquidez).
 
 **Público o privado.** GitHub Pages en repos privados requiere plan pago. Con el repo privado, el workflow corre igual (~15 min por día, dentro de los 2.000 min gratis) y el reporte se ve bajando el repo y abriendo `docs/index.html`. Con el repo público, la URL de Pages es visible para cualquiera que la tenga.
+
+## Diagnóstico de un ticker
+
+Para saber por qué una acción apareció o no un día determinado: **Actions → Scanner EP diario → Run workflow**, con `MRNA 2026-08-19` en el campo *diagnose*. El resumen de la corrida muestra cada regla con su valor, el umbral y si pasa. No toca el reporte ni el registro de señales.
 
 ## Opcional: correr en una PC (Windows)
 

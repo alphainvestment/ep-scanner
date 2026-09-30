@@ -5,8 +5,9 @@ import argparse
 import json
 import logging
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -18,7 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def run(cfg, fetcher, root: Path = ROOT, force: bool = False, fundamentals: bool = True,
-        tickers: list[str] | None = None, today: date | None = None) -> dict | None:
+        tickers: list[str] | None = None, today: date | None = None,
+        now: datetime | None = None) -> dict | None:
     data_dir, docs_dir = root / "data", root / "docs"
     data_dir.mkdir(exist_ok=True)
     state_path = data_dir / "state.json"
@@ -43,14 +45,22 @@ def run(cfg, fetcher, root: Path = ROOT, force: bool = False, fundamentals: bool
     # Fecha de cierre: la más frecuente entre las últimas barras
     asof = Counter(df.index[-1] for df in prices.values()).most_common(1)[0][0]
     asof_s = asof.date().isoformat()
-    if state.get("last_asof") == asof_s and not force:
+
+    # ¿La barra de hoy ya está cerrada? Si el mercado sigue abierto, el reporte es provisional:
+    # no se registran señales ni se marca el cierre como procesado.
+    tz = ZoneInfo(cfg.SESSION["tz"])
+    now = (now or datetime.now(tz)).astimezone(tz)
+    hh, mm = (int(x) for x in cfg.SESSION["final_after"].split(":"))
+    provisional = asof.date() >= now.date() and now.time() < time(hh, mm)
+
+    if state.get("last_final_asof") == asof_s and not force and not provisional:
         log.info("Ya se procesó el cierre %s (feriado o corrida repetida). Uso --force para rehacer.", asof_s)
         return None
-    log.info("Procesando cierre %s", asof_s)
+    log.info("Procesando %s%s", asof_s, " (PROVISIONAL: mercado abierto)" if provisional else "")
 
     # 3) Contexto y detección
     regime = detect.market_regime(prices, cfg.MARKET["indices"])
-    ep, nine_m, delayed, followup = [], [], [], []
+    ep, nine_m, delayed, followup, rejected = [], [], [], [], []
     for t in uni["ticker"]:
         df = prices.get(t)
         if df is None:
@@ -61,6 +71,7 @@ def run(cfg, fetcher, root: Path = ROOT, force: bool = False, fundamentals: bool
             log.debug("%s: %s", t, e)
             continue
         ep += r["ep"]; nine_m += r["nine_m"]; delayed += r["delayed"]; followup += r["followup"]
+        rejected += r["rejected"]
     log.info("EPs: %d · 9M: %d · Delayed: %d · Seguimiento: %d", len(ep), len(nine_m), len(delayed), len(followup))
 
     # 4) Fundamentals para los candidatos (prioridad: EP > delayed breakout > 9M > setup)
@@ -80,11 +91,14 @@ def run(cfg, fetcher, root: Path = ROOT, force: bool = False, fundamentals: bool
             f = cache[key]
             row.update({k: v for k, v in f.items() if k != "name" or not names.get(row["ticker"])})
 
-    for rows in (ep, nine_m, followup):
+    for rows in (ep, nine_m, followup, rejected):
         for r in rows:
             r.setdefault("name", names.get(r["ticker"], ""))
     for r in ep + nine_m:
         r["score"] = score(r)
+        r["fund_missing"] = not any(r.get(k) is not None for k in
+                                    ("mkt_cap", "earnings_catalyst", "rev_yoy_q0", "rev_growth"))
+    rejected.sort(key=lambda r: -(r.get("dollar_vol") or 0))
     for r in delayed:
         r.setdefault("name", names.get(r["ticker"], ""))
         r["score"] = score({**r, "gap": r["ep_gap"], "rvol": r["ep_rvol"], "close_pos": r["ep_close_pos"],
@@ -101,9 +115,12 @@ def run(cfg, fetcher, root: Path = ROOT, force: bool = False, fundamentals: bool
     new += [dict(signal_date=asof_s, ticker=r["ticker"], type="DEP", score=r["score"],
                  regime=regime["label"], ref_close=r["close"], stop=r["stop_ref"])
             for r in delayed if r["kind"] == "Breakout"]
-    record = not tickers  # las pruebas con --tickers no ensucian el registro
+    # Las pruebas con --tickers y las corridas con mercado abierto no tocan el registro
+    record = not tickers and not provisional
     if record:
-        signals = tracker.append_signals(signals, new)
+        # Una re-corrida del mismo cierre reemplaza las señales pendientes de ese día
+        signals = signals[~((signals["signal_date"].astype(str) == asof_s) & (signals["status"] == "pending"))]
+        signals = tracker.append_signals(signals.reset_index(drop=True), new)
     signals = tracker.update(signals, prices, cfg.TRACKING["horizon"], cfg.TRACKING["report_horizons"])
     if record:
         signals.to_csv(sig_path, index=False)
@@ -111,15 +128,16 @@ def run(cfg, fetcher, root: Path = ROOT, force: bool = False, fundamentals: bool
     counts = signals["status"].value_counts()
 
     ctx = dict(
-        cfg=cfg, asof=asof_s, universe_n=len(uni), regime=regime,
-        ep=ep, nine_m=nine_m, delayed=delayed, followup=followup,
+        cfg=cfg, asof=asof_s, universe_n=len(uni), regime=regime, provisional=provisional,
+        ep=ep, nine_m=nine_m, delayed=delayed, followup=followup, rejected=rejected,
         signals=signals, stats_type=st_type, stats_regime=st_regime,
         tracking=dict(total=len(signals), closed=int(counts.get("closed", 0)), open=int(counts.get("open", 0)),
                       pending=int(counts.get("pending", 0)), invalid=int(counts.get("invalid", 0))),
     )
     report.write(docs_dir, ctx)
     if record:
-        state.update(last_asof=asof_s)
+        state.pop("last_asof", None)
+        state.update(last_final_asof=asof_s)
         state_path.write_text(json.dumps(state, indent=2))
     log.info("Reporte escrito en %s", docs_dir / "index.html")
     return ctx
@@ -131,6 +149,8 @@ def cli():
     ap.add_argument("--no-fundamentals", action="store_true", help="saltea las consultas de fundamentals")
     ap.add_argument("--tickers", help="lista separada por comas para una prueba rápida (ignora el universo)")
     ap.add_argument("--rebuild-universe", action="store_true", help="fuerza la reconstrucción del universo")
+    ap.add_argument("--diagnose", nargs=2, metavar=("TICKER", "FECHA"),
+                    help="evalúa cada regla sobre un ticker en una fecha (AAAA-MM-DD), sin tocar el reporte")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
@@ -140,6 +160,10 @@ def cli():
     import config as cfg
     from .data import YahooFetcher
     fetcher = YahooFetcher(cfg.DOWNLOAD)
+    if a.diagnose:
+        from .diagnose import diagnose
+        print(diagnose(cfg, fetcher, a.diagnose[0].upper(), a.diagnose[1]))
+        return
     if a.rebuild_universe:
         universe.get_universe(cfg.UNIVERSE, fetcher, ROOT / "data", force=True)
     tk = [t.strip().upper() for t in a.tickers.split(",")] if a.tickers else None

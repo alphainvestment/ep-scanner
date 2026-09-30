@@ -93,6 +93,10 @@ def status_cell(v):
 
 # ── tablas ──────────────────────────────────────────────────────────────────
 
+def h_is_score(header: str) -> bool:
+    return header.startswith("Score")
+
+
 def table(rows: list[dict], cols: list[tuple], empty: str) -> str:
     if not rows:
         return f'<p class="empty">{empty}</p>'
@@ -100,9 +104,16 @@ def table(rows: list[dict], cols: list[tuple], empty: str) -> str:
     body = []
     for r in rows:
         tds = []
-        for key, _, fmt, _ in cols:
+        for key, hdr, fmt, _tip in cols:
             val = r if key == "*" else r.get(key)
-            sortv = _n(val) if key != "*" else r.get("ticker")
+            if key == "*":
+                sortv = r.get("score") if h_is_score(hdr) else r.get("ticker")
+            elif _n(val) is not None:
+                sortv = _n(val)
+            elif val is None or isinstance(val, float):
+                sortv = None
+            else:
+                sortv = str(val)
             sv = "" if sortv is None else html.escape(str(sortv))
             tds.append(f'<td data-v="{sv}">{fmt(val)}</td>')
         body.append("<tr>" + "".join(tds) + "</tr>")
@@ -112,7 +123,9 @@ def table(rows: list[dict], cols: list[tuple], empty: str) -> str:
 
 EP_COLS = [
     ("*", "Ticker", ticker_cell, ""),
-    ("score", "Score", score_cell, "Score 0-100 (ver 'Cómo leer')"),
+    ("*", "Score", lambda r: score_cell(r.get("score")) + (
+        ' <span class="warn-s" title="Yahoo no devolvió fundamentals: revisar el catalizador a mano">sin datos</span>'
+        if r.get("fund_missing") else ""), "Score 0-100 (ver 'Cómo leer')"),
     ("gap", "Gap", pct, "Apertura vs cierre previo"),
     ("chg", "Var.", pct, "Cierre vs cierre previo"),
     ("rvol", "RVol", mult, "Volumen / promedio 50 ruedas previas"),
@@ -149,6 +162,20 @@ DELAYED_COLS = [
     ("rev_yoy_q0", "Ventas YoY", pct, ""),
     ("stop_ref", "Stop", price, "Mínimo de la consolidación"),
     ("risk_pct", "Riesgo", lambda v: pct(v, 1, False), ""),
+]
+
+REJECTED_COLS = [
+    ("*", "Ticker", ticker_cell, ""),
+    ("kind", "Tipo", plain, ""),
+    ("reasons", "Motivo del descarte", plain, ""),
+    ("gap", "Gap", pct, ""),
+    ("chg", "Var.", pct, ""),
+    ("rvol", "RVol", mult, ""),
+    ("dollar_vol", "USD op.", money, ""),
+    ("close", "Cierre", price, ""),
+    ("close_pos", "Cierre rango", lambda v: pct(v, 0, False), ""),
+    ("off_52wh", "vs máx. 52s", pct, "Cierre previo vs máximo de 52 semanas"),
+    ("ret_3m", "Var. 3m previa", pct, ""),
 ]
 
 FOLLOW_COLS = [
@@ -204,25 +231,30 @@ def render(ctx: dict) -> str:
     setups = [r for r in dl if r["kind"] == "Setup"]
     kpis = [("EPs del día", len(ep), "ep"), ("9M EPs", len(nm), "nm"),
             ("Delayed · breakout", len(brk), "dl"), ("Delayed · setup", len(setups), "dl"),
-            ("En seguimiento", len(fu), "fu")]
+            ("En seguimiento", len(fu), "fu"), ("Descartados", len(ctx["rejected"]), "rj")]
     kpi_html = "".join(f'<a class="kpi" href="#{a}"><span>{v}</span><small>{k}</small></a>' for k, v, a in kpis)
     tr = ctx["tracking"]
     cfg = ctx["cfg"]
 
+    PROV = ('<section class="prov"><strong>Reporte provisional</strong> Se generó con el mercado abierto: '
+            'la barra del día todavía no cerró, así que gaps, volumen y cierres pueden cambiar. '
+            'No se registraron señales. El reporte definitivo sale con la corrida automática posterior al cierre.</section>'
+            if ctx.get("provisional") else "")
     return f"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Scanner EP · {ctx['asof']}</title>
+<title>Scanner EP · {ctx['asof']}{' (provisional)' if ctx.get('provisional') else ''}</title>
 <style>{CSS}</style></head>
 <body>
 <header>
   <div class="wrap">
     <div class="eyebrow">Scanner de Episodic Pivots</div>
-    <h1>Al cierre del {ctx['asof_long']}</h1>
+    <h1>{'Intradiario (provisional) del' if ctx.get('provisional') else 'Al cierre del'} {ctx['asof_long']}</h1>
     <div class="meta">Universo: {ctx['universe_n']:,} acciones US · Datos: Yahoo Finance · Generado {ctx['generated']}</div>
   </div>
 </header>
 <main class="wrap">
+  {PROV}
   <section class="regime {reg_cls}">
     <div><small>Contexto de mercado</small><strong>{reg['label']}</strong>
     <p>Los EPs rinden mucho mejor con índices en tendencia. En contexto desfavorable, más gaps se devuelven en el día.</p></div>
@@ -243,6 +275,10 @@ def render(ctx: dict) -> str:
   <h3>Breakouts</h3>{table(brk, DELAYED_COLS, 'Sin breakouts de delayed EP hoy.')}
   <h3>Setups en formación</h3>{table(setups, DELAYED_COLS, 'Sin setups en formación.')}</section>
 
+  <section id="rj"><h2>Descartados por los filtros de calidad</h2>
+  <p class="sub">Cumplieron gap/volumen pero no los filtros de calidad (precio ≥ {cfg.QUALITY['min_price']:.0f}, cierre en la mitad superior del rango, no más de {pct(-cfg.QUALITY['max_off_52wh'], 0, False)} abajo del máximo de 52 semanas, sin pump de más de {pct(cfg.QUALITY['max_prior_runup'], 0, False)} en las {cfg.QUALITY['runup_window']} ruedas previas). Se listan para auditar los filtros, no para operar.</p>
+  {table(ctx['rejected'], REJECTED_COLS, 'Ningún descarte hoy.')}</section>
+
   <section id="fu"><h2>Seguimiento de EPs recientes</h2>
   <p class="sub">Todos los EPs de las últimas {cfg.FOLLOWUP['days']} ruedas y cómo vienen. Útil para gestionar posiciones abiertas.</p>
   {table(fu, FOLLOW_COLS, 'Sin EPs en las últimas ruedas.')}</section>
@@ -259,7 +295,7 @@ def render(ctx: dict) -> str:
   <p>Ordena las señales; no es una señal en sí misma. Tamaño del gap (20), volumen relativo (20), neglect: cuánto subió en los 3 meses previos (20), cierre dentro del rango del día (15) y catalizador/números: resultados en la fecha, sorpresa de EPS y crecimiento de ventas (25).</p>
   <p>Los fundamentals vienen de Yahoo y a veces faltan o llegan con demora. Si el score es alto sin datos de resultados, revisar el catalizador a mano antes de operar.</p>
   </details>
-  <footer>Descargas: <a href="data/ep_today.csv">EPs del día</a> · <a href="data/nine_m.csv">9M</a> · <a href="data/delayed.csv">Delayed</a> · <a href="data/followup.csv">Seguimiento</a> · <a href="data/signals.csv">Registro de señales</a> · <a href="data/stats.csv">Estadísticas</a></footer>
+  <footer>Descargas: <a href="data/ep_today.csv">EPs del día</a> · <a href="data/nine_m.csv">9M</a> · <a href="data/delayed.csv">Delayed</a> · <a href="data/followup.csv">Seguimiento</a> · <a href="data/rejected.csv">Descartados</a> · <a href="data/signals.csv">Registro de señales</a> · <a href="data/stats.csv">Estadísticas</a></footer>
 </main>
 <script>{JS}</script>
 </body></html>"""
@@ -306,6 +342,7 @@ tbody tr:hover{background:color-mix(in srgb,var(--acc) 7%,transparent)}
 .ok{color:var(--ok)}.muted{color:var(--mut)}.empty{color:var(--mut);font-style:italic;margin:6px 0}
 .warn-s{font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:3px;padding:0 4px;margin-left:6px}
 .note{font-size:12px;color:var(--mut);border-left:3px solid var(--line);padding-left:10px}
+.prov{border-left:4px solid var(--warn);background:var(--warnb);color:var(--ink)}.prov strong{color:var(--warn);margin-right:6px}
 .how{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;color:var(--mut)}
 .how summary{cursor:pointer;color:var(--ink);font-weight:600}
 footer{padding:18px 0 40px;color:var(--mut);font-size:12px}footer a{color:var(--acc)}
@@ -336,7 +373,8 @@ def write(out_dir: Path, ctx: dict) -> None:
     ctx["asof_long"] = f"{DIAS[d.dayofweek]} {d.day} de {MESES[d.month - 1]} de {d.year}"
     ctx["generated"] = datetime.now().strftime("%d/%m/%Y %H:%M")
     (out_dir / "index.html").write_text(render(ctx), encoding="utf-8")
-    for key, fname in (("ep", "ep_today"), ("nine_m", "nine_m"), ("delayed", "delayed"), ("followup", "followup")):
+    for key, fname in (("ep", "ep_today"), ("nine_m", "nine_m"), ("delayed", "delayed"),
+                       ("followup", "followup"), ("rejected", "rejected")):
         pd.DataFrame(ctx[key]).to_csv(out_dir / "data" / f"{fname}.csv", index=False)
     ctx["signals"].to_csv(out_dir / "data" / "signals.csv", index=False)
     st = ctx["stats_type"]

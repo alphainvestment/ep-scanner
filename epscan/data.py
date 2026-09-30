@@ -98,6 +98,12 @@ class YahooFetcher:
             )
         except Exception as e:
             log.debug("%s info: %s", ticker, e)
+        if not out.get("mkt_cap"):
+            try:  # endpoint alternativo, suele responder aunque .info falle
+                fi = tk.fast_info
+                out["mkt_cap"] = getattr(fi, "market_cap", None)
+            except Exception as e:
+                log.debug("%s fast_info: %s", ticker, e)
 
         # ¿Hubo resultados justo antes del gap?
         try:

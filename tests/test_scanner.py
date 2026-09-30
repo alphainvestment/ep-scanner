@@ -106,6 +106,16 @@ def build_universe():
     for j, k in enumerate(range(N - 40, N)):
         df.iloc[k] = [path[j] * 0.995, path[j] * 1.01, path[j] * 0.985, path[j], 8e5]
     u["OLD"] = df
+    # Pump de microcap destruida (como LGHL/VBIO): de 400 a 4, gap +45% y cierre flojo
+    c = np.r_[np.geomspace(400, 6, N - 60), np.linspace(6, 4.5, 60)]
+    u["BUST"] = with_gap(series(c, np.full(N, 4e5)), N - 1, 0.45, 0.85, 2e7, low_mult=0.97, high_mult=1.3)
+    # Ya bombeada en las ruedas previas (como MSGY): de 3 a 9 en 5 ruedas y otro gap
+    c = np.r_[np.full(N - 6, 6.0), [7, 9, 13, 11, 12]]
+    c = np.r_[c, [12.0]]
+    u["PUMP"] = with_gap(series(c, np.full(N, 5e5)), N - 1, 0.12, 1.05, 8e6)
+    # Acción sana con gap pero cierre en la parte baja del rango
+    c, v = flat(30, 6e5)
+    u["WEAK"] = with_gap(series(c, v), N - 1, 0.15, 0.93, 6e6, low_mult=0.99, high_mult=1.10)
     # Ruido
     for i in range(20):
         c, v = flat(RNG.uniform(5, 100), RNG.uniform(3e5, 5e6))
@@ -136,7 +146,7 @@ class FakeFetcher:
 
 
 def scan_all(u, asof=DATES[-1]):
-    out = dict(ep=[], nine_m=[], delayed=[], followup=[])
+    out = dict(ep=[], nine_m=[], delayed=[], followup=[], rejected=[])
     for t, df in u.items():
         r = detect.scan_ticker(t, df, asof, cfg)
         for k in out:
@@ -151,6 +161,11 @@ def test_detection():
     r = scan_all(u)
     eps = {x["ticker"]: x for x in r["ep"]}
     assert set(eps) == {"NEGL", "EXTD"}, eps.keys()
+    rej = {x["ticker"]: x["reasons"] for x in r["rejected"]}
+    assert set(rej) == {"BUST", "PUMP", "WEAK"}, rej
+    assert "destruida" in rej["BUST"] and "Cierre débil" in rej["BUST"]
+    assert "Pump previo" in rej["PUMP"]
+    assert rej["WEAK"].startswith("Cierre débil")
     assert eps["NEGL"]["neglected"] is True
     assert eps["EXTD"]["neglected"] is False
     assert "FADE" not in eps
@@ -159,6 +174,7 @@ def test_detection():
     assert dl == {"DELB": "Breakout", "DELS": "Setup"}, dl
     fu = {x["ticker"] for x in r["followup"]}
     assert {"NEGL", "EXTD", "DELB", "DELS", "FILL"} <= fu
+    assert not {"BUST", "PUMP", "WEAK"} & fu
     fill = [x for x in r["followup"] if x["ticker"] == "FILL"][0]
     assert fill["gap_filled"] and fill["status"] == "Perdió LOD"
 
@@ -199,6 +215,20 @@ def test_tracker_evaluate():
     assert tracker.evaluate(dict(signal_date=idx[-1].date().isoformat(), stop=9.5), base, 20, [5])["status"] == "pending"
 
 
+AFTER_CLOSE = lambda d: pd.Timestamp(d).tz_localize("America/New_York") + pd.Timedelta(hours=18)
+INTRADAY = lambda d: pd.Timestamp(d).tz_localize("America/New_York") + pd.Timedelta(hours=13, minutes=20)
+
+
+def test_neglect_is_symmetric():
+    u = build_universe()
+    r = scan_all(u)
+    eps = {x["ticker"]: x for x in r["ep"]}
+    from epscan.score import score
+    crashed = {**eps["NEGL"], "ret_3m": -0.80}
+    assert detect.neglect_at is not None
+    assert score(crashed) < score(eps["NEGL"]) - 15
+
+
 def test_end_to_end():
     u = build_universe()
     tmp = Path(tempfile.mkdtemp())
@@ -210,19 +240,33 @@ def test_end_to_end():
 
         # Corrida 1: 30 ruedas atrás (genera señales que después se evalúan)
         past = DATES[-41]
-        ctx = main.run(cfg, FakeFetcher(u, cut=past), root=tmp, today=past.date())
+        ctx = main.run(cfg, FakeFetcher(u, cut=past), root=tmp, today=past.date(), now=AFTER_CLOSE(past))
         assert ctx is not None
-        # Corrida 2: hoy
-        ctx = main.run(cfg, FakeFetcher(u), root=tmp, today=DATES[-1].date())
+        # Corrida intradiaria de hoy: reporte provisional, sin registrar señales ni marcar el cierre
+        before = pd.read_csv(tmp / "data" / "signals.csv")
+        ctx = main.run(cfg, FakeFetcher(u), root=tmp, today=DATES[-1].date(), now=INTRADAY(DATES[-1]))
+        assert ctx["provisional"] and len(pd.read_csv(tmp / "data" / "signals.csv")) == len(before)
+        assert "Reporte provisional" in (tmp / "docs" / "index.html").read_text()
+        # Corrida 2: hoy, después del cierre (no la bloquea la corrida provisional)
+        ctx = main.run(cfg, FakeFetcher(u), root=tmp, today=DATES[-1].date(), now=AFTER_CLOSE(DATES[-1]))
+        assert not ctx["provisional"]
         assert ctx is not None
         assert {r["ticker"] for r in ctx["ep"]} == {"NEGL", "EXTD"}
         negl = [r for r in ctx["ep"] if r["ticker"] == "NEGL"][0]
         assert negl["earnings_catalyst"] and negl["name"] == "Neglected Inc"
         assert ctx["ep"][0]["ticker"] == "NEGL"  # mayor score
         # Repetir el mismo cierre no reprocesa
-        assert main.run(cfg, FakeFetcher(u), root=tmp, today=DATES[-1].date()) is None
+        assert main.run(cfg, FakeFetcher(u), root=tmp, today=DATES[-1].date(), now=AFTER_CLOSE(DATES[-1])) is None
+        # --force sobre el mismo cierre reemplaza las pendientes del día, no las duplica
+        n1 = len(pd.read_csv(tmp / "data" / "signals.csv"))
+        main.run(cfg, FakeFetcher(u), root=tmp, today=DATES[-1].date(), now=AFTER_CLOSE(DATES[-1]), force=True)
+        assert len(pd.read_csv(tmp / "data" / "signals.csv")) == n1
+        # Un estado viejo (formato anterior, marcado por una corrida intradiaria) no bloquea
+        (tmp / "data" / "state.json").write_text('{"last_asof": "%s"}' % DATES[-1].date())
+        assert main.run(cfg, FakeFetcher(u), root=tmp, today=DATES[-1].date(), now=AFTER_CLOSE(DATES[-1])) is not None
+        assert "Descartados por los filtros" in (tmp / "docs" / "index.html").read_text()
         html = (tmp / "docs" / "index.html").read_text()
-        for s in ("NEGL", "DELB", "DELS", "9 Million", "Favorable"):
+        for s in ("NEGL", "DELB", "DELS", "9 Million", "Favorable", "BUST", "Pump previo"):
             assert s in html, s
         sig = pd.read_csv(tmp / "data" / "signals.csv")
         assert {"EP", "DEP", "9M"} <= set(sig["type"])

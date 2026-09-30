@@ -3,7 +3,7 @@
 Componentes (máximo):
   Tamaño del movimiento  20  gap (o variación, en 9M) hasta 25%
   Volumen relativo       20  escala logarítmica hasta 10x
-  Neglect                20  suba de 3 meses previa: 20 pts si <= 10%, 0 si >= 50%
+  Neglect                20  variación de 3 meses previa: 20 pts si está entre -10% y +10%, 0 si |var| >= 50%
   Cierre en el rango     15  cerrar en el máximo del día = 15
   Catalizador / números  25  resultados en la fecha (10) + sorpresa EPS (hasta 5) + crecimiento de ventas (hasta 10)
 """
@@ -30,7 +30,7 @@ def score(row: dict) -> int:
 
     r3 = _f(row.get("ret_3m"))
     if r3 is not None:
-        pts += 20 * min(max((0.50 - r3) / 0.40, 0), 1)
+        pts += 20 * min(max((0.50 - abs(r3)) / 0.40, 0), 1)  # lateral puntúa; subida o desplome, no
 
     cp = _f(row.get("close_pos"))
     if cp is not None:
