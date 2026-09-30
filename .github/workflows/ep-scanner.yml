@@ -1,0 +1,77 @@
+name: Scanner EP diario
+
+on:
+  schedule:
+    # 22:30 UTC = 19:30 Buenos Aires, lunes a viernes (después del cierre en NY todo el año)
+    - cron: "30 22 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Reprocesar aunque el cierre ya se haya procesado"
+        type: boolean
+        default: false
+      tickers:
+        description: "Prueba rápida: tickers separados por coma (vacío = universo completo)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ep-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Correr scanner
+        env:
+          FORCE: ${{ github.event.inputs.force }}
+          TICKERS: ${{ github.event.inputs.tickers }}
+        run: |
+          ARGS=""
+          if [ "$FORCE" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ -n "$TICKERS" ]; then ARGS="$ARGS --tickers $TICKERS"; fi
+          python run.py $ARGS
+
+      - name: Guardar resultados
+        run: |
+          git config user.name "ep-scanner-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data docs
+          if git diff --cached --quiet; then
+            echo "Sin cambios (feriado o cierre ya procesado)"
+          else
+            git commit -m "Scanner EP $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+      - name: Resumen
+        if: always()
+        run: |
+          if [ -f docs/data/ep_today.csv ]; then
+            echo "### EPs del día" >> $GITHUB_STEP_SUMMARY
+            python - >> $GITHUB_STEP_SUMMARY <<'PY' || true
+          import pandas as p
+          d = p.read_csv("docs/data/ep_today.csv") if __import__("os").path.getsize("docs/data/ep_today.csv") > 2 else p.DataFrame()
+          if d.empty:
+              print("Sin EPs")
+          else:
+              print("| Ticker | Score | Gap | RVol |\n|---|---|---|---|")
+              for _, r in d.iterrows():
+                  print(f"| {r.ticker} | {r.score} | {r.gap:.1%} | {r.rvol:.1f}x |")
+          PY
+          fi
