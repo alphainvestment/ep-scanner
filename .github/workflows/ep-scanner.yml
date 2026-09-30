@@ -14,6 +14,10 @@ on:
         description: "Prueba rápida: tickers separados por coma (vacío = universo completo)"
         type: string
         default: ""
+      diagnose:
+        description: "Diagnóstico: TICKER FECHA (ej. MRNA 2026-08-19). No toca el reporte"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -41,13 +45,16 @@ jobs:
         env:
           FORCE: ${{ github.event.inputs.force }}
           TICKERS: ${{ github.event.inputs.tickers }}
+          DIAGNOSE: ${{ github.event.inputs.diagnose }}
         run: |
+          if [ -n "$DIAGNOSE" ]; then python run.py --diagnose $DIAGNOSE; exit 0; fi
           ARGS=""
           if [ "$FORCE" = "true" ]; then ARGS="$ARGS --force"; fi
           if [ -n "$TICKERS" ]; then ARGS="$ARGS --tickers $TICKERS"; fi
           python run.py $ARGS
 
       - name: Guardar resultados
+        if: github.event.inputs.diagnose == ''
         run: |
           git config user.name "ep-scanner-bot"
           git config user.email "actions@users.noreply.github.com"
@@ -60,7 +67,7 @@ jobs:
           fi
 
       - name: Resumen
-        if: always()
+        if: always() && github.event.inputs.diagnose == ''
         run: |
           if [ -f docs/data/ep_today.csv ]; then
             echo "### EPs del día" >> $GITHUB_STEP_SUMMARY
