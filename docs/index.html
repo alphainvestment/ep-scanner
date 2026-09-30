@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scanner EP · 2026-09-30</title>
+<style>
+:root{--bg:#f5f7fa;--card:#fff;--ink:#1d2430;--mut:#667085;--line:#e3e7ee;--head:#10376b;--acc:#2f6fd0;
+--ok:#1f7a4d;--okb:#e5f4ec;--warn:#9a6a00;--warnb:#fbf1d9;--bad:#b3261e;--badb:#fbe7e5}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f141b;--card:#161d27;--ink:#e6eaf0;--mut:#8b96a8;--line:#263142;
+--head:#0c2140;--acc:#6ea0ec;--ok:#5cc58d;--okb:#12301f;--warn:#e0b44c;--warnb:#33290f;--bad:#f07b72;--badb:#3a1714}}
+:root[data-theme="dark"]{--bg:#0f141b;--card:#161d27;--ink:#e6eaf0;--mut:#8b96a8;--line:#263142;--head:#0c2140;--acc:#6ea0ec;
+--ok:#5cc58d;--okb:#12301f;--warn:#e0b44c;--warnb:#33290f;--bad:#f07b72;--badb:#3a1714}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif}
+.wrap{max-width:1400px;margin:0 auto;padding:0 16px}
+header{background:linear-gradient(100deg,#10376b,#1b4f94);color:#fff;padding:22px 0 20px}
+.eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;opacity:.75}
+h1{margin:4px 0 2px;font-size:24px;font-weight:600}.meta{font-size:12px;opacity:.75}
+h2{font-size:18px;margin:0 0 4px;color:var(--ink)}h3{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:18px 0 6px}
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;margin:14px 0}
+.sub{margin:0 0 10px;color:var(--mut);font-size:13px}
+.regime{display:flex;gap:20px;flex-wrap:wrap;align-items:center;border-left:4px solid var(--mut)}
+.regime.ok{border-left-color:var(--ok)}.regime.warn{border-left-color:var(--warn)}.regime.bad{border-left-color:var(--bad)}
+.regime small{display:block;color:var(--mut);text-transform:uppercase;font-size:11px;letter-spacing:.08em}
+.regime strong{font-size:22px}.regime.ok strong{color:var(--ok)}.regime.warn strong{color:var(--warn)}.regime.bad strong{color:var(--bad)}
+.regime p{margin:4px 0 0;color:var(--mut);font-size:12px;max-width:380px}
+.ixs{display:flex;gap:10px;flex-wrap:wrap}.ix{border:1px solid var(--line);border-radius:6px;padding:8px 12px;min-width:170px}
+.ix small{display:block;color:var(--mut);font-size:11px;margin-top:2px}
+.up{color:var(--ok)}.dn{color:var(--bad)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
+.kpi{background:var(--card);border:1px solid var(--line);border-top:3px solid var(--acc);border-radius:8px;padding:10px 14px;text-decoration:none;color:var(--ink)}
+.kpi span{font-size:26px;font-weight:600;display:block}.kpi small{color:var(--mut)}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+th{position:sticky;top:0;background:var(--head);color:#fff;font-weight:600;text-align:right;padding:7px 9px;white-space:nowrap;cursor:pointer;user-select:none;font-size:12px}
+th:first-child,td:first-child{text-align:left}th.asc:after{content:" ▲"}th.desc:after{content:" ▼"}
+td{padding:6px 9px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}
+tbody tr:hover{background:color-mix(in srgb,var(--acc) 7%,transparent)}
+.tk{display:flex;gap:8px;align-items:center}.tk b{font-size:14px}.lk a{font-size:10px;color:var(--acc);text-decoration:none;border:1px solid var(--line);border-radius:3px;padding:0 4px;margin-right:3px}
+.nm{color:var(--mut);font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.sc{display:inline-block;min-width:32px;text-align:center;border-radius:4px;padding:1px 6px;font-weight:600}
+.sc.hi{background:var(--okb);color:var(--ok)}.sc.md{background:var(--warnb);color:var(--warn)}.sc.lo{background:var(--line);color:var(--mut)}
+.pill{border-radius:10px;padding:1px 8px;font-size:12px;background:var(--line)}
+.pill.ok{background:var(--okb);color:var(--ok)}.pill.warn{background:var(--warnb);color:var(--warn)}.pill.bad{background:var(--badb);color:var(--bad)}
+.ok{color:var(--ok)}.muted{color:var(--mut)}.empty{color:var(--mut);font-style:italic;margin:6px 0}
+.warn-s{font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:3px;padding:0 4px;margin-left:6px}
+.note{font-size:12px;color:var(--mut);border-left:3px solid var(--line);padding-left:10px}
+.how{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;color:var(--mut)}
+.how summary{cursor:pointer;color:var(--ink);font-weight:600}
+footer{padding:18px 0 40px;color:var(--mut);font-size:12px}footer a{color:var(--acc)}
+@media (max-width:640px){h1{font-size:19px}section{padding:12px}}
+</style></head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="eyebrow">Scanner de Episodic Pivots</div>
+    <h1>Al cierre del miércoles 30 de septiembre de 2026</h1>
+    <div class="meta">Universo: 3 acciones US · Datos: Yahoo Finance · Generado 30/09/2026 17:06</div>
+  </div>
+</header>
+<main class="wrap">
+  <section class="regime warn">
+    <div><small>Contexto de mercado</small><strong>Neutral</strong>
+    <p>Los EPs rinden mucho mejor con índices en tendencia. En contexto desfavorable, más gaps se devuelven en el día.</p></div>
+    <div class="ixs"><div class="ix"><b>SPY</b> <span>768.39</span> <span class="up">+0.5%</span><small>MM20 ✓ · MM50 ✓ · 1m +0.2%</small></div><div class="ix"><b>QQQ</b> <span>744.16</span> <span class="up">+0.8%</span><small>MM20 ✓ · MM50 ✓ · 1m +3.8%</small></div><div class="ix"><b>IWM</b> <span>279.33</span> <span class="up">+0.1%</span><small>MM20 ✗ · MM50 ✗ · 1m -5.0%</small></div></div>
+  </section>
+  <nav class="kpis"><a class="kpi" href="#ep"><span>0</span><small>EPs del día</small></a><a class="kpi" href="#nm"><span>0</span><small>9M EPs</small></a><a class="kpi" href="#dl"><span>0</span><small>Delayed · breakout</small></a><a class="kpi" href="#dl"><span>0</span><small>Delayed · setup</small></a><a class="kpi" href="#fu"><span>0</span><small>En seguimiento</small></a></nav>
+
+  <section id="ep"><h2>EPs del día</h2>
+  <p class="sub">Gap ≥ 8%, RVol ≥ 3x, operado ≥ 10.0M USD, sin devolver el gap entero. Ordenados por score.</p>
+  <p class="empty">Sin EPs que cumplan los filtros hoy.</p></section>
+
+  <section id="nm"><h2>9 Million EPs</h2>
+  <p class="sub">Volumen ≥ 9M acciones, suba ≥ 4% y RVol ≥ 2x, que no califican como EP clásico.</p>
+  <p class="empty">Sin 9M EPs hoy.</p></section>
+
+  <section id="dl"><h2>Delayed EPs</h2>
+  <p class="sub">EPs de hace 3 a 30 ruedas que nunca cerraron debajo del cierre previo al gap. <b>Breakout</b>: hoy cerró sobre el máximo de la consolidación. <b>Setup</b>: consolidación ajustada a menos de 10% del máximo, para vigilar.</p>
+  <h3>Breakouts</h3><p class="empty">Sin breakouts de delayed EP hoy.</p>
+  <h3>Setups en formación</h3><p class="empty">Sin setups en formación.</p></section>
+
+  <section id="fu"><h2>Seguimiento de EPs recientes</h2>
+  <p class="sub">Todos los EPs de las últimas 20 ruedas y cómo vienen. Útil para gestionar posiciones abiertas.</p>
+  <p class="empty">Sin EPs en las últimas ruedas.</p></section>
+
+  <section id="st"><h2>Resultados históricos del scanner</h2>
+  <p class="sub">Señales registradas: 0 · cerradas: 0 · abiertas: 0 · pendientes de entrada: 0 · invalidadas: 0.
+  Simulación: entrada en la apertura siguiente, stop en el LOD (o mínimo de la consolidación en delayed EPs), salida por stop o a las 20 ruedas. Sin comisiones ni slippage.</p>
+  <h3>Por tipo de señal</h3><p class="empty">Todavía no hay señales cerradas. Las estadísticas aparecen a medida que las señales completan su horizonte o tocan el stop.</p>
+  <h3>Por tipo y contexto de mercado al momento de la señal</h3><p class="empty">Todavía no hay señales cerradas. Las estadísticas aparecen a medida que las señales completan su horizonte o tocan el stop.</p>
+  <p class="note">Un scanner diario no ve la apertura: el trade real de día 1 (compra en el ORH, stop en el LOD) va a tener otro resultado que el simulado acá. Esta tabla sirve para comparar tipos de señal y contextos entre sí, no como estimación exacta del rendimiento.</p>
+  </section>
+
+  <details class="how"><summary>Cómo leer el score</summary>
+  <p>Ordena las señales; no es una señal en sí misma. Tamaño del gap (20), volumen relativo (20), neglect: cuánto subió en los 3 meses previos (20), cierre dentro del rango del día (15) y catalizador/números: resultados en la fecha, sorpresa de EPS y crecimiento de ventas (25).</p>
+  <p>Los fundamentals vienen de Yahoo y a veces faltan o llegan con demora. Si el score es alto sin datos de resultados, revisar el catalizador a mano antes de operar.</p>
+  </details>
+  <footer>Descargas: <a href="data/ep_today.csv">EPs del día</a> · <a href="data/nine_m.csv">9M</a> · <a href="data/delayed.csv">Delayed</a> · <a href="data/followup.csv">Seguimiento</a> · <a href="data/signals.csv">Registro de señales</a> · <a href="data/stats.csv">Estadísticas</a></footer>
+</main>
+<script>
+document.querySelectorAll('table.sortable').forEach(t=>{
+  t.querySelectorAll('th').forEach((th,i)=>th.addEventListener('click',()=>{
+    const tb=t.tBodies[0],rows=[...tb.rows],asc=!th.classList.contains('desc')&&th.classList.contains('asc')?false:!th.classList.contains('asc');
+    t.querySelectorAll('th').forEach(h=>h.classList.remove('asc','desc'));th.classList.add(asc?'asc':'desc');
+    rows.sort((a,b)=>{const x=a.cells[i].dataset.v,y=b.cells[i].dataset.v,nx=parseFloat(x),ny=parseFloat(y);
+      if(x===''&&y!=='')return 1;if(y===''&&x!=='')return -1;
+      const c=(!isNaN(nx)&&!isNaN(ny))?nx-ny:String(x).localeCompare(String(y));return asc?c:-c});
+    rows.forEach(r=>tb.appendChild(r));}));});
+</script>
+</body></html>
